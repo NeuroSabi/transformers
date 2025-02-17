@@ -4,11 +4,13 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 
+from ...activations import ACT2FN
 from ...cache_utils import Cache
 from ...modeling_flash_attention_utils import FlashAttentionKwargs
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...processing_utils import Unpack
 from ...utils import logging
+from ...configuration_utils import PretrainedConfig
 from ..llama.modeling_llama import (
     LlamaAttention,
     LlamaDecoderLayer,
@@ -26,22 +28,44 @@ from .configuration_principle import PrincipleConfig
 
 logger = logging.get_logger(__name__)
 
+class PrincipleMLP(nn.Module):
+    def __init__(self, config: PrincipleConfig, layer_idx):
+        super().__init__()
+        self.config = config
+        self.in_size = config.layer_sizes[layer_idx]
+        # out dimension = next in dimension
+        self.out_size = config.layer_sizes[layer_idx + 1]
+        
+        self.mlp_upscale_size = config.mlp_upscale_size
+        self.gate_proj = nn.Linear(self.in_size, self.mlp_upscale_size, bias=False)
+        self.up_proj = nn.Linear(self.in_size, self.mlp_upscale_size, bias=False)
+        self.down_proj = nn.Linear(self.mlp_upscale_size, self.out_size, bias=False)
+        self.act_fn = ACT2FN[config.hidden_act]
 
-class PrincipleMLP(LlamaMLP):
-    def __init__(self, config):
-        super().__init__(config)
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+    def forward(self, x):
+        """
+        in: [b, l, in_size]
+        out: [b, l, out_size]
+        """
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj
 
 
-class PrincipleAttention(LlamaAttention):
+class PrincipleAttention(nn.Module):
     def __init__(self, config: PrincipleConfig, layer_idx: int):
-        super().__init__(config, layer_idx)
-        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=True)
-        self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        self.head_dim = getattr(config, "head_dim", config.layer_sizes[layer_idx] // config.num_attention_heads)
+        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.scaling = self.head_dim**-0.5
+        self.attention_dropout = config.attention_dropout
+        self.is_causal = True
+        self.q_proj = nn.Linear(config.layer_sizes[layer_idx], config.num_attention_heads * self.head_dim, bias=True)
+        self.k_proj = nn.Linear(config.layer_sizes[layer_idx], config.num_key_value_heads * self.head_dim, bias=True)
+        self.v_proj = nn.Linear(config.layer_sizes[layer_idx], config.num_key_value_heads * self.head_dim, bias=True)
+        # Current design pattern is that, the dimension-changing operation is purely on MLP. so that this o_proj will remain the input/output dimension
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.layer_sizes[layer_idx], bias=False)
 
     def forward(
         self,
@@ -123,11 +147,11 @@ class PrincipleRMSNorm(nn.Module):
 class PrincipleDecoderLayer(nn.Module):
     def __init__(self, config: PrincipleConfig, layer_idx: int):
         super().__init__()
-        self.hidden_size = config.hidden_size
+        self.hidden_size = config.layer_sizes[layer_idx]
         self.self_attn = PrincipleAttention(config=config, layer_idx=layer_idx)
-        self.mlp = PrincipleMLP(config)
-        self.input_layernorm = PrincipleRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = PrincipleRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp = PrincipleMLP(config, layer_idx)
+        self.input_layernorm = PrincipleRMSNorm(config.layer_sizes[layer_idx], eps=config.rms_norm_eps)
+        self.post_attention_layernorm = PrincipleRMSNorm(config.layer_sizes[layer_idx], eps=config.rms_norm_eps)
         if config.sliding_window and config._attn_implementation != "flash_attention_2":
             logger.warning_once(
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
@@ -163,8 +187,14 @@ class PrincipleDecoderLayer(nn.Module):
         )
         hidden_states = residual + hidden_states
 
-        # Fully Connected
-        residual = hidden_states
+        # Fully Connected(original version)
+        # residual = hidden_states
+        # hidden_states = self.post_attention_layernorm(hidden_states)
+        # hidden_states = self.mlp(hidden_states)
+        # hidden_states = residual + hidden_states
+
+        # Fully Connected(principle version)
+        residual = self.mlp(hidden_states) # map from input_dim to output_dim to enable residual connection
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
@@ -177,11 +207,16 @@ class PrincipleDecoderLayer(nn.Module):
 
 
 class PrincipleModel(LlamaModel):
-    pass
+    def __init__(self, config: PrincipleConfig):
+        super().__init__(config)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.layer_sizes[0], self.padding_idx)
+        self.norm = PrincipleRMSNorm(config.layer_sizes[0], eps=config.rms_norm_eps)
 
 
 class PrincipleForCausalLM(LlamaForCausalLM):
-    pass
+    def __init__(self, config):
+        super().__init__(config)
+        self.lm_head = nn.Linear(config.layer_sizes[config.num_hidden_layers], config.vocab_size, bias=False)
 
 
 class PrincipleForSequenceClassification(LlamaForSequenceClassification):

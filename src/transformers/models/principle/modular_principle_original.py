@@ -38,10 +38,10 @@ class PrincipleMLP(LlamaMLP):
 class PrincipleAttention(LlamaAttention):
     def __init__(self, config: PrincipleConfig, layer_idx: int):
         super().__init__(config, layer_idx)
-        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=True)
-        self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+        self.q_proj = nn.Linear(config.linguistic_space_size, config.num_attention_heads * self.head_dim, bias=True)
+        self.k_proj = nn.Linear(config.linguistic_space_size, config.num_key_value_heads * self.head_dim, bias=True)
+        self.v_proj = nn.Linear(config.linguistic_space_size, config.num_key_value_heads * self.head_dim, bias=True)
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.linguistic_space_size, bias=False)
 
     def forward(
         self,

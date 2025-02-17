@@ -36,9 +36,9 @@ class PrincipleConfig(PretrainedConfig):
         vocab_size (`int`, *optional*, defaults to 151936):
             Vocabulary size of the Principle model. Defines the number of different tokens that can be represented by the
             `inputs_ids` passed when calling [`PrincipleModel`]
-        hidden_size (`int`, *optional*, defaults to 4096):
+        [CHANGE]hidden_size (`int`, *optional*, defaults to 4096):
             Dimension of the hidden representations.
-        intermediate_size (`int`, *optional*, defaults to 22016):
+        [CHANGE]intermediate_size (`int`, *optional*, defaults to 22016):
             Dimension of the MLP representations.
         num_hidden_layers (`int`, *optional*, defaults to 32):
             Number of hidden layers in the Transformer encoder.
@@ -142,9 +142,8 @@ class PrincipleConfig(PretrainedConfig):
     def __init__(
         self,
         vocab_size=151936,
-        hidden_size=4096,
-        intermediate_size=22016,
-        num_hidden_layers=32,
+        mlp_upscale_size=22016,
+        layer_sizes=[4096] * 32, # manually determine the layer input / output dimension
         num_attention_heads=32,
         num_key_value_heads=32,
         hidden_act="silu",
@@ -163,9 +162,10 @@ class PrincipleConfig(PretrainedConfig):
     ):
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.num_hidden_layers = num_hidden_layers
+        self.mlp_upscale_size = mlp_upscale_size
+        self.layer_sizes = layer_sizes
+        self.num_hidden_layers = len(layer_sizes) - 1
+        self.hidden_size = layer_sizes[0] # This is for RoPE embedding
         self.num_attention_heads = num_attention_heads
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window if use_sliding_window else None

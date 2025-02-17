@@ -2103,6 +2103,7 @@ class Trainer:
             kwargs (`Dict[str, Any]`, *optional*):
                 Additional keyword arguments used to hide deprecated arguments
         """
+        # resume from a checkpoint
         if resume_from_checkpoint is False:
             resume_from_checkpoint = None
 
