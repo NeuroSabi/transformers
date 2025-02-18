@@ -165,6 +165,7 @@ class PrincipleConfig(PretrainedConfig):
         self.mlp_upscale_size = mlp_upscale_size
         self.layer_sizes = layer_sizes
         self.num_hidden_layers = len(layer_sizes) - 1
+        print(f"Initializing config with num_hidden_layers = {self.num_hidden_layers}")
         self.hidden_size = layer_sizes[0] # This is for RoPE embedding
         self.num_attention_heads = num_attention_heads
         self.use_sliding_window = use_sliding_window

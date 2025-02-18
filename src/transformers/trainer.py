@@ -2496,6 +2496,7 @@ class Trainer:
             if args.gradient_accumulation_steps == 1:
                 total_updates -= 1
             for _ in range(total_updates):
+                torch.cuda.empty_cache()
                 update_step += 1
                 num_batches = args.gradient_accumulation_steps if update_step != (total_updates - 1) else remainder
                 batch_samples, num_items_in_batch = self.get_batch_samples(epoch_iterator, num_batches)
